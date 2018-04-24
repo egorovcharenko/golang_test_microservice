@@ -11,28 +11,38 @@ import (
 	"sync"
 )
 
+// Цена на момент времени
 type PriceAtMoment struct {
 	Price float64
 	Time  time.Time
 }
 
-type Pair struct {
-	AveragePrice float64
-	AllPrices []PriceAtMoment
+// Новый тип для сериализации с заданным количеством знаков после запятой
+type Number float64
+func (n Number) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf("%.4f", n)), nil
 }
+
+// Пара валют со всеми ценами за 10 минут и средним
+type Pair struct {
+	AvgP      Number
+	allPrices []PriceAtMoment
+}
+var pairs map[string]Pair
+var pairsMutex sync.RWMutex
 
 var apiUrl = "https://wex.nz/api/3/"
 
-var pairsMutex sync.RWMutex
-var pairs map[string]Pair
-
+// структура для парсинга ответа сервера
 type serverInfoResponse struct {
 	ServerTime int                    `json:"server_time"`
 	Pairs      map[string]interface{} `json:"pairs"`
 }
 
-var myClient = &http.Client{Timeout: 10 * time.Second}
+// свой клиент для установки таймаута
+var myClient = &http.Client{Timeout: 5 * time.Second}
 
+// срока содержащая все пары для запроса
 var pairString string
 
 func populatePairs() {
@@ -97,13 +107,13 @@ func pollPairs() {
 				fmt.Println("Такой котировки не найдено")
 			}
 			price := value["last"]
-			pair.AllPrices = append(pair.AllPrices, PriceAtMoment{price, time.Now()})
+			pair.allPrices = append(pair.allPrices, PriceAtMoment{price, time.Now()})
 
 			// вычисляем и заменяем среднее за 10 минут
-			if len(pair.AllPrices) > 0 {
+			if len(pair.allPrices) > 0 {
 				sum, num := 0.0, 0
 				newPrices := make([]PriceAtMoment, 0)
-				for _, p := range pair.AllPrices {
+				for _, p := range pair.allPrices {
 					if time.Since(p.Time).Minutes() < 10 {
 						sum += p.Price
 						num ++
@@ -111,8 +121,8 @@ func pollPairs() {
 						newPrices = append(newPrices, p)
 					}
 				}
-				pair.AllPrices = newPrices
-				pair.AveragePrice = sum / float64(num)
+				pair.allPrices = newPrices
+				pair.AvgP = Number(sum / float64(num))
 			}
 
 			// кладем обратно пару в хранилище
@@ -132,13 +142,14 @@ func main() {
 
 	// Поднимаем веб-сервер для обслуживания API
 	rtr := mux.NewRouter()
-	rtr.HandleFunc("/ticker/{pair}", handler).Methods("GET")
+	rtr.HandleFunc("/ticker/{pair}", getSinglePairHandler).Methods("GET")
+	rtr.HandleFunc("/", getAllPairsHandler).Methods("GET")
 	http.Handle("/", rtr)
 	log.Println("Listening...")
 	http.ListenAndServe(":3000", nil)
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
+func getSinglePairHandler(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
 	pairsMutex.RLock()
 	pair, ok := pairs[params["pair"]]
@@ -147,6 +158,16 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Такой пары не найдено, или котировки еще не загружены"))
 		return
 	}
-	s := fmt.Sprintf("{'price': %v}", pair.AveragePrice)
+	s := fmt.Sprintf("{'price': %v}", pair.AvgP)
+	w.Write([]byte(s))
+}
+
+
+func getAllPairsHandler(w http.ResponseWriter, r *http.Request) {
+	pairsMutex.RLock()
+	jsonInfo, _ := json.Marshal(pairs)
+	pairsMutex.RUnlock()
+
+	s := fmt.Sprintf("%v", string(jsonInfo))
 	w.Write([]byte(s))
 }
