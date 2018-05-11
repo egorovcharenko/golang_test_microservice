@@ -48,10 +48,10 @@ var exchanges = map[string]*Exchange{
 }
 
 type singlePriceResponse struct {
-	ExchangeName string `json:"Exchange"`
-	AvgP         Number `json:"AvgP"`
+	ExchangeName string `json:"exchange"`
+	AvgP         Number `json:"averagePrice"`
 }
-
+type allPricesResponse map[string][]singlePriceResponse
 
 func main() {
 	// Начинаем заполнять пары с биржы в память
@@ -61,7 +61,7 @@ func main() {
 	// Поднимаем веб-сервер для обслуживания API
 	rtr := mux.NewRouter()
 	rtr.HandleFunc("/ticker/{pair}", getSinglePairHandler).Methods("GET")
-	//rtr.HandleFunc("/", getAllPairsHandler).Methods("GET")
+	rtr.HandleFunc("/", getAllPairsHandler).Methods("GET")
 	http.Handle("/", rtr)
 	log.Println("Listening...")
 	http.ListenAndServe(":3000", nil)
@@ -85,11 +85,30 @@ func getSinglePairHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(jsonInfo))
 }
 
-//func getAllPairsHandler(w http.ResponseWriter, r *http.Request) {
-//	pairsMutex.RLock()
-//	jsonInfo, _ := json.Marshal(pairs)
-//	pairsMutex.RUnlock()
-//
-//	s := fmt.Sprintf("%v", string(jsonInfo))
-//	w.Write([]byte(s))
-//}
+func getAllPairsHandler(w http.ResponseWriter, _ *http.Request) {
+	var response = make(allPricesResponse)
+	for exchangeName, exchangeData := range exchanges {
+		exchangeData.pairsMutex.RLock()
+		for symbol, pairData := range exchangeData.pairs {
+			existingResponse, ok := response[symbol]
+			fmt.Printf("ok: %v, symbol: %v\n", ok, symbol)
+			if ok {
+				// пара есть в ответе - добавить стоимость на данной бирже просто
+				response[symbol] = append(existingResponse, singlePriceResponse{
+					exchangeName, pairData.AvgP,
+				})
+
+			} else {
+				// пары в ответе еще нет - добавить ее
+				response[symbol] = []singlePriceResponse{
+					{
+						exchangeName, pairData.AvgP,
+					},
+				}
+			}
+		}
+		exchangeData.pairsMutex.RUnlock()
+	}
+	jsonInfo, _ := json.MarshalIndent(response, " ", " ")
+	w.Write([]byte(jsonInfo))
+}
